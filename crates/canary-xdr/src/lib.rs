@@ -8,6 +8,6 @@ pub mod decoder;
 pub mod encoder;
 pub mod runner;
 
-pub use decoder::{decode, DecodedValue, XdrTypeName};
-pub use encoder::encode;
+pub use decoder::{decode, decode_transaction_envelope, DecodedValue, XdrDecodeError, XdrTypeName};
+pub use encoder::{encode, encode_transaction_envelope};
 pub use runner::{DefaultXdrRunner, XdrAssertion, XdrError, XdrFixture, XdrRunner};
