@@ -67,6 +67,13 @@ pub struct CheckArgs {
     #[arg(long = "rpc-url")]
     pub rpc_url: Option<String>,
 
+    /// Directory to treat as the project root (default: the current
+    /// directory). Relative `--config`, `--fixtures-dir` and `--output`
+    /// paths are resolved against it. The root is never searched for in
+    /// parent directories.
+    #[arg(long = "project-root", value_name = "PATH")]
+    pub project_root: Option<PathBuf>,
+
     /// Path to a configuration file (default: .stellar-canary.toml in the
     /// project root).
     #[arg(long)]
@@ -144,6 +151,13 @@ pub struct InspectArgs {
     #[arg(long = "fixtures-dir", default_value = "fixtures")]
     pub fixtures_dir: PathBuf,
 
+    /// Directory to treat as the project root (default: the current
+    /// directory). Relative `--config`, `--fixtures-dir` and `--output`
+    /// paths are resolved against it. The root is never searched for in
+    /// parent directories.
+    #[arg(long = "project-root", value_name = "PATH")]
+    pub project_root: Option<PathBuf>,
+
     /// Path to a configuration file (default: .stellar-canary.toml in the
     /// project root).
     #[arg(long)]
@@ -160,6 +174,13 @@ pub struct FixturesArgs {
     /// Directory containing fixture files.
     #[arg(long = "fixtures-dir", default_value = "fixtures")]
     pub fixtures_dir: PathBuf,
+
+    /// Directory to treat as the project root (default: the current
+    /// directory). Relative `--config`, `--fixtures-dir` and `--output`
+    /// paths are resolved against it. The root is never searched for in
+    /// parent directories.
+    #[arg(long = "project-root", value_name = "PATH")]
+    pub project_root: Option<PathBuf>,
 
     /// Path to a configuration file (default: .stellar-canary.toml in the
     /// project root).
@@ -215,6 +236,16 @@ mod tests {
             assert!(!args.offline);
         } else {
             panic!("Expected Check command");
+    fn project_root_defaults_to_none_for_every_command() {
+        for command in ["check", "inspect", "fixtures"] {
+            let cli = Cli::parse_from(["stellar-canary", command]);
+            let root = match cli.command {
+                Command::Check(args) => args.project_root,
+                Command::Inspect(args) => args.project_root,
+                Command::Fixtures(args) => args.project_root,
+                other => panic!("unexpected command {other:?}"),
+            };
+            assert_eq!(root, None, "{command}");
         }
     }
 
@@ -225,6 +256,16 @@ mod tests {
             assert!(args.offline);
         } else {
             panic!("Expected Check command");
+    fn project_root_flag_takes_a_path_on_every_command() {
+        for command in ["check", "inspect", "fixtures"] {
+            let cli = Cli::parse_from(["stellar-canary", command, "--project-root", "member"]);
+            let root = match cli.command {
+                Command::Check(args) => args.project_root,
+                Command::Inspect(args) => args.project_root,
+                Command::Fixtures(args) => args.project_root,
+                other => panic!("unexpected command {other:?}"),
+            };
+            assert_eq!(root, Some(PathBuf::from("member")), "{command}");
         }
     }
 
