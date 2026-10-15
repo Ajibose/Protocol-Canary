@@ -6,6 +6,7 @@
 //! ever rendered.
 
 pub mod json;
+pub mod junit;
 pub mod markdown;
 pub mod terminal;
 
@@ -15,6 +16,7 @@ use canary_core::{
 };
 
 pub use json::JsonReporter;
+pub use junit::JUnitReporter;
 pub use markdown::MarkdownReporter;
 pub use terminal::TerminalReporter;
 
