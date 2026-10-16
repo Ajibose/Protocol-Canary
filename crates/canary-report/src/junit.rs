@@ -242,9 +242,11 @@ mod tests {
             network: None,
             results,
             skipped,
+            verification: Vec::new(),
             decision: PolicyDecision::Pass,
             git: GitContext::default(),
             verbose: false,
+            run: None,
         }
     }
 

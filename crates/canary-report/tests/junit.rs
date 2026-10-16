@@ -36,9 +36,11 @@ fn report(results: Vec<CompatibilityResult>, skipped: Vec<SkipSummary>) -> Repor
         network: None,
         results,
         skipped,
+        verification: Vec::new(),
         decision: PolicyDecision::Pass,
         git: GitContext::default(),
         verbose: false,
+        run: None,
     }
 }
 
@@ -53,7 +55,6 @@ struct Element {
 /// on both structure and diagnostics.
 fn parse(xml: &str) -> Vec<Element> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut elements: Vec<Element> = Vec::new();
     let mut stack: Vec<Element> = Vec::new();
 
@@ -68,17 +69,41 @@ fn parse(xml: &str) -> Vec<Element> {
                 });
             }
             Ok(Event::Text(text)) => {
-                let element = stack.last_mut().expect("text inside an element");
-                let text = text.unescape().expect("well-formed entity in text");
-                element.text.push_str(&text);
+                let text = text.xml10_content().expect("well-formed text");
+                match stack.last_mut() {
+                    Some(element) => element.text.push_str(&text),
+                    // Whitespace before the root element and after it is
+                    // legal; anything else outside an element is not.
+                    None => assert!(
+                        text.trim().is_empty(),
+                        "non-whitespace text outside the root element"
+                    ),
+                }
+            }
+            Ok(Event::GeneralRef(entity)) => {
+                // quick-xml emits `&ref;` as its own event, so entity
+                // resolution happens here — skipping it would silently
+                // drop the character from the round-trip the tests assert.
+                let name = std::str::from_utf8(&entity).expect("entity name is ASCII");
+                let resolved = quick_xml::escape::resolve_predefined_entity(name)
+                    .unwrap_or_else(|| panic!("unknown entity `&{name};`"));
+                let element = stack
+                    .last_mut()
+                    .expect("entity reference inside an element");
+                element.text.push_str(resolved);
             }
             Ok(Event::End(end)) => {
                 let name = String::from_utf8_lossy(end.name().as_ref()).into_owned();
-                let closed = stack.pop().expect("tags are balanced");
+                let mut closed = stack.pop().expect("tags are balanced");
                 assert_eq!(
                     closed.name, name,
                     "end tag must match its start tag — the document must be well-formed"
                 );
+                // Entity references split the text into several events, so
+                // whitespace adjacent to one survives as a separate chunk:
+                // trim once per element instead of per event.
+                let trimmed = closed.text.trim().to_string();
+                closed.text = trimmed;
                 elements.push(closed);
             }
             Ok(Event::Empty(empty)) => {
@@ -112,7 +137,7 @@ fn attributes(
             let attr = attr.expect("well-formed attribute");
             let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
             let value = attr
-                .decode_and_unescape_value(reader.decoder())
+                .decoded_and_normalized_value(quick_xml::XmlVersion::Explicit1_0, reader.decoder())
                 .expect("well-formed attribute value")
                 .into_owned();
             (key, value)
