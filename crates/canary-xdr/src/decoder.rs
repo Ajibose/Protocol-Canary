@@ -8,7 +8,9 @@
 
 use std::fmt;
 
-use stellar_xdr::{ContractExecutable, Limits, ReadXdr, StellarValue, TransactionEnvelope};
+use stellar_xdr::{
+    ContractExecutable, LedgerEntry, Limits, ReadXdr, StellarValue, TransactionEnvelope,
+};
 
 /// A type name a fixture can name in its `type` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +19,7 @@ pub enum XdrTypeName {
     ContractExecutable,
     ScVal,
     TransactionEnvelope,
+    LedgerEntry,
 }
 
 impl fmt::Display for XdrTypeName {
@@ -26,6 +29,7 @@ impl fmt::Display for XdrTypeName {
             XdrTypeName::ContractExecutable => f.write_str("ContractExecutable"),
             XdrTypeName::ScVal => f.write_str("ScVal"),
             XdrTypeName::TransactionEnvelope => f.write_str("TransactionEnvelope"),
+            XdrTypeName::LedgerEntry => f.write_str("LedgerEntry"),
         }
     }
 }
@@ -39,9 +43,10 @@ impl std::str::FromStr for XdrTypeName {
             "ContractExecutable" => Ok(XdrTypeName::ContractExecutable),
             "ScVal" => Ok(XdrTypeName::ScVal),
             "TransactionEnvelope" => Ok(XdrTypeName::TransactionEnvelope),
+            "LedgerEntry" => Ok(XdrTypeName::LedgerEntry),
             other => Err(format!(
                 "unsupported XDR type name {other:?}: supported types are: StellarValue, \
-                 ContractExecutable, ScVal, TransactionEnvelope"
+                 ContractExecutable, ScVal, TransactionEnvelope, LedgerEntry"
             )),
         }
     }
@@ -56,6 +61,10 @@ pub enum DecodedValue {
     /// Boxed because a full `TransactionEnvelope` dwarfs the other
     /// variants; the indirection keeps `DecodedValue` small enough to move.
     TransactionEnvelope(Box<TransactionEnvelope>),
+    /// Boxed because a full `LedgerEntry` (a `ContractCode` entry can carry
+    /// an entire WASM module) dwarfs the other variants; the indirection
+    /// keeps `DecodedValue` small enough to move.
+    LedgerEntry(Box<LedgerEntry>),
 }
 
 impl DecodedValue {
@@ -82,6 +91,7 @@ impl DecodedValue {
             DecodedValue::ContractExecutable(_) => XdrTypeName::ContractExecutable,
             DecodedValue::ScVal(_) => XdrTypeName::ScVal,
             DecodedValue::TransactionEnvelope(_) => XdrTypeName::TransactionEnvelope,
+            DecodedValue::LedgerEntry(_) => XdrTypeName::LedgerEntry,
         }
     }
 }
@@ -90,8 +100,9 @@ impl DecodedValue {
 /// which decoding failed.
 ///
 /// Returned by the typed decode entry points such as
-/// [`decode_transaction_envelope`]. Unlike a bare `stellar_xdr::Error`,
-/// this separates input that is not base64 at all from input whose decoded
+/// [`decode_transaction_envelope`] or [`decode_ledger_entry`]. Unlike a
+/// bare `stellar_xdr::Error`, this separates input that is not base64 at
+/// all from input whose decoded
 /// bytes are not valid XDR, and it names the offset *into the decoded XDR
 /// bytes* at which the parse stopped — the information needed to debug a
 /// truncated or corrupt capture.
@@ -183,6 +194,23 @@ pub fn decode_transaction_envelope(
     read_xdr_from_base64(XdrTypeName::TransactionEnvelope, base64_text)
 }
 
+/// Decodes base64 LedgerEntry XDR.
+///
+/// Covers every `LedgerEntryData` variant the engine supports — Account,
+/// Trustline, ContractData, ContractCode, and the rest — because
+/// `LedgerEntry` is decoded as a whole, including the entry's
+/// `lastModifiedLedgerSeq` and `ext` (so a `ContractCode` entry's V1
+/// extension with its cost inputs survives a roundtrip untouched).
+///
+/// Fails with [`XdrDecodeError`] when the input is not valid base64, when
+/// the decoded bytes are not a complete `LedgerEntry`, or when bytes remain
+/// after the value. Re-encoding the result with
+/// [`crate::encode_ledger_entry`] reproduces the input byte for byte (see
+/// `tests/ledger_entry_roundtrip.rs`).
+pub fn decode_ledger_entry(base64_text: &str) -> Result<LedgerEntry, XdrDecodeError> {
+    read_xdr_from_base64(XdrTypeName::LedgerEntry, base64_text)
+}
+
 /// Decodes `base64` as the named XDR type.
 ///
 /// An error here is a real decode failure, not a tool bug: it is the
@@ -205,6 +233,8 @@ pub fn decode(type_name: XdrTypeName, base64: &str) -> Result<DecodedValue, stel
             TransactionEnvelope::from_xdr_base64(base64, Limits::none())
                 .map(|envelope| DecodedValue::TransactionEnvelope(Box::new(envelope)))
         }
+        XdrTypeName::LedgerEntry => LedgerEntry::from_xdr_base64(base64, Limits::none())
+            .map(|entry| DecodedValue::LedgerEntry(Box::new(entry))),
     }
 }
 
@@ -244,6 +274,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_ledger_entry_type_name() {
+        assert_eq!(
+            "LedgerEntry".parse::<XdrTypeName>().unwrap(),
+            XdrTypeName::LedgerEntry
+        );
+        assert_eq!(XdrTypeName::LedgerEntry.to_string(), "LedgerEntry");
+    }
+
+    #[test]
     fn decode_transaction_envelope_decodes_a_valid_envelope() {
         use stellar_xdr::WriteXdr;
 
@@ -254,12 +293,27 @@ mod tests {
         assert_eq!(decoded, TransactionEnvelope::default());
     }
 
+    #[test]
+    fn decode_ledger_entry_decodes_a_valid_entry() {
+        use stellar_xdr::WriteXdr;
+
+        let base64 = LedgerEntry::default()
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+        let decoded = decode_ledger_entry(&base64).unwrap();
+        assert_eq!(decoded, LedgerEntry::default());
+    }
+
     /// Input that is not base64 at all has no decoded bytes to point into,
     /// so it is a distinct variant with offset 0 — never a parse error at
     /// some fabricated position.
     #[test]
     fn corrupted_base64_is_reported_as_invalid_base64_at_offset_zero() {
         let err = decode_transaction_envelope("not valid base64!!!").unwrap_err();
+        assert!(matches!(err, XdrDecodeError::InvalidBase64(_)), "{err:?}");
+        assert_eq!(err.byte_offset(), 0);
+
+        let err = decode_ledger_entry("not valid base64!!!").unwrap_err();
         assert!(matches!(err, XdrDecodeError::InvalidBase64(_)), "{err:?}");
         assert_eq!(err.byte_offset(), 0);
     }
